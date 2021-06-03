@@ -35,5 +35,5 @@ videostreamer provides a way to stream IP Cam video from an input source to YouT
   input and remux and write to another format.
 
 ## Runnning examples
-./videostreamer -verbose -format rtsp -i rtsp://<user>:<password>@192.168.1.109 -f flv -o rtmp://a.rtmp.youtube.com/live2/<STREAMKEY> -a
+./videostreamer -verbose -format rtsp -i rtsp://{user}:{password}@192.168.1.109 -f flv -o rtmp://a.rtmp.youtube.com/live2/{STREAMKEY} -a
 
