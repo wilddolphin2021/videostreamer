@@ -9,13 +9,19 @@
 //
 
 #include <errno.h>
+#include <libavutil/avutil.h>
 #include <libavdevice/avdevice.h>
-#include <libavutil/timestamp.h>
+#include <libavutil/opt.h>
 #include <libavresample/avresample.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "videostreamer.h"
+#ifndef AVUTIL_TIMESTAMP_H
+#include "timestamp.h"
+#endif // AVUTIL_TIMESTAMP_H
+#define AV_ERROR_MAX_STRING_SIZE 1024
+#define AV_ROUND_PASS_MINMAX 8192
 
 static void
 __vs_log_packet(const AVFormatContext * const,
@@ -76,7 +82,9 @@ vs_open_input(const char * const input_format_name,
 	int const open_status = avformat_open_input(&input->format_ctx, input_url,
 			input_format, &opts);
 	if (open_status != 0) {
-		printf("unable to open input: %s\n", av_err2str(open_status));
+		char av_errstr[AV_ERROR_MAX_STRING_SIZE]; 
+		av_strerror(open_status, av_errstr, AV_ERROR_MAX_STRING_SIZE);
+		printf("unable to open input: %s\n", av_errstr);
 		vs_destroy_input(input);
 		return NULL;
 	}
@@ -162,13 +170,13 @@ vs_open_output(const char * const output_format_name,
 		return NULL;
 	}
 
-	if (avformat_alloc_output_context2(&output->format_ctx, output_format,
-				NULL, NULL) < 0) {
-		printf("unable to create output context\n");
+	output->format_ctx = avformat_alloc_context();
+	if (!output->format_ctx) {
+        printf("unable to create output context");
 		vs_destroy_output(output);
 		return NULL;
-	}
-
+    }
+    output->format_ctx->oformat = output_format;
 
 	// Copy the video stream.
 
@@ -194,10 +202,10 @@ vs_open_output(const char * const output_format_name,
     out_stream->sample_aspect_ratio.num = cctx->sample_aspect_ratio.num;
     out_stream->sample_aspect_ratio.den = cctx->sample_aspect_ratio.den;
     // Assume r_frame_rate is accurate
-    in_stream->r_frame_rate.num = 25;
-    in_stream->r_frame_rate.den = 1;
-    out_stream->r_frame_rate      = in_stream->r_frame_rate;
-    out_stream->avg_frame_rate    = out_stream->r_frame_rate;
+    in_stream->avg_frame_rate.num = 25;
+    in_stream->avg_frame_rate.den = 1;
+    out_stream->avg_frame_rate      = in_stream->avg_frame_rate;
+    out_stream->avg_frame_rate    = out_stream->avg_frame_rate;
 
     in_stream->codec = cctx;
     out_stream->time_base.den = out_stream->time_base.num = 0;
@@ -207,8 +215,7 @@ vs_open_output(const char * const output_format_name,
 	    /* find the encoder */
 	    AVCodec* acodec = avcodec_find_encoder(AV_CODEC_ID_AAC);
 	    if (acodec == NULL) {
-	       printf("Could not find encoder for '%s'\n",
-	                avcodec_get_name(AV_CODEC_ID_AAC));
+	       printf("Could not find audio encoder for\n");
 	    }
 
 		output->audio.st = avformat_new_stream(output->format_ctx, acodec);
@@ -258,7 +265,7 @@ vs_open_output(const char * const output_format_name,
 		return NULL;
 	}
 
-	if (av_dict_set_int(&opts, "flush_packets", 1, 0) < 0) {
+	if (av_dict_set(&opts, "flush_packets", "1", 0) < 0) {
 		printf("unable to set flush_packets opt\n");
 		vs_destroy_output(output);
 		av_dict_free(&opts);
@@ -293,7 +300,7 @@ vs_open_output(const char * const output_format_name,
 			return NULL;
 		}
 
-		if (av_dict_set_int(&opts, "threads", 0, 0) < 0) {
+		if (av_dict_set(&opts, "threads", "0", 0) < 0) {
 			printf("unable to set threads opt\n");
 			vs_destroy_output(output);
 			av_dict_free(&opts);
@@ -333,14 +340,6 @@ vs_open_output(const char * const output_format_name,
 			vs_destroy_output(output);
 			return NULL;
 		}
-
-		AVDictionary * options = NULL;
-		if (av_opt_set_dict(&output->format_ctx->av_class, &options) < 0) {
-			printf("unable to set avio context option dictionary\n");
-			vs_destroy_output(output);
-			return NULL;
-		}
-		av_dict_free(&options);
 	}
 
 	if (avformat_write_header(output->format_ctx, &opts) < 0) {
@@ -390,13 +389,16 @@ vs_destroy_output(struct VSOutput * const output)
 
 // AUDIO
 int 
-vs_write_frame(AVFormatContext *fmt_ctx, const AVRational *time_base, AVStream *st, AVPacket *pkt)
+vs_write_frame(AVFormatContext *fmt_ctx, const AVRational *time_base, AVStream *st, AVPacket *pkt, const bool verbose)
 {
     /* rescale output packet timestamp values from codec to stream timebase */
     av_packet_rescale_ts(pkt, *time_base, st->time_base);
     pkt->stream_index = st->index;
     /* Write the compressed frame to the media file. */
-    __vs_log_packet(fmt_ctx, pkt, "a");
+    if(verbose) {
+    	__vs_log_packet(fmt_ctx, pkt, "a");
+	}
+
     return av_interleaved_write_frame(fmt_ctx, pkt);
 }
 
@@ -479,7 +481,9 @@ vs_open_audio(struct VSOutput *output, AVCodec* acodec)
     av_dict_free(&opts);
 
     if (ret < 0) {
-        printf("Could not open audio codec: %s\n", av_err2str(ret));
+		char av_errstr[AV_ERROR_MAX_STRING_SIZE]; 
+		av_strerror(ret, av_errstr, AV_ERROR_MAX_STRING_SIZE);
+        printf("Could not open audio codec: %s\n", av_errstr);
         return ret;
     }
 
@@ -557,7 +561,7 @@ vs_get_audio_frame(struct VSOutput *output)
  * return 1 when encoding is finished, 0 otherwise
  */
 int 
-vs_write_audio_frame(struct VSOutput* output, AVPacket * const refPkt)
+vs_write_audio_frame(struct VSOutput* output, AVPacket * const refPkt, const bool verbose)
 {
     AVCodecContext *c;
     AVPacket pkt = { 0 }; // data and size must be 0;
@@ -609,7 +613,9 @@ vs_write_audio_frame(struct VSOutput* output, AVPacket * const refPkt)
     }
     ret = avcodec_encode_audio2(c, &pkt, frame, &got_packet);
     if (ret < 0) {
-        printf("Error encoding audio frame: %s\n", av_err2str(ret));
+		char av_errstr[AV_ERROR_MAX_STRING_SIZE]; 
+		av_strerror(ret, av_errstr, AV_ERROR_MAX_STRING_SIZE);
+        printf("Error encoding audio frame: %s\n", av_errstr);
         return ret;
     }
     if (got_packet) {
@@ -617,10 +623,13 @@ vs_write_audio_frame(struct VSOutput* output, AVPacket * const refPkt)
 		pkt.pts = refPkt->pts;
 		pkt.dts = refPkt->dts;
 
-        ret = vs_write_frame(fmt_ctx, &c->time_base, ost->st, &pkt);
+        ret = vs_write_frame(fmt_ctx, &c->time_base, ost->st, &pkt, verbose);
         if (ret < 0) {
+        	char av_errstr[AV_ERROR_MAX_STRING_SIZE]; 
+			av_strerror(ret, av_errstr, AV_ERROR_MAX_STRING_SIZE);
+
             printf("Error while writing audio frame: %s\n",
-                    av_err2str(ret));
+                    av_errstr);
             return ret;
         }
     }
@@ -814,20 +823,26 @@ vs_write_packet(const struct VSInput * const input,
 	// Using av_write_frame() skips buffering.
 	const int write_res = av_write_frame(output->format_ctx, pkt);
 	if (write_res != 0) {
-		printf("unable to write frame: %s\n", av_err2str(write_res));
+		char av_errstr[AV_ERROR_MAX_STRING_SIZE]; 
+		av_strerror(write_res, av_errstr, AV_ERROR_MAX_STRING_SIZE);
+		printf("unable to write frame: %s\n", av_errstr);
 		return -1;
 	}
 
 	// Write audio packet
 	if(output->audio.st) {
-		const int write_audio_res = vs_write_audio_frame(output, pkt);
+		const int write_audio_res = vs_write_audio_frame(output, pkt, verbose);
 		if (write_audio_res != 0) {
-			printf("unable to write audio frame: %s\n", av_err2str(write_audio_res));
+			char av_errstr[AV_ERROR_MAX_STRING_SIZE]; 
+			av_strerror(write_audio_res, av_errstr, AV_ERROR_MAX_STRING_SIZE);
+
+			printf("unable to write audio frame: %s\n", av_errstr);
 		}
 	}
 
 	return 1;
 }
+
 
 static void
 __vs_log_packet(const AVFormatContext * const format_ctx,

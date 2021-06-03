@@ -15,7 +15,7 @@ import (
 // #include "videostreamer.h"
 // #include <stdlib.h>
 // #cgo LDFLAGS: -lavformat -lavdevice -lavcodec -lavutil -lavresample
-// #cgo CFLAGS: -std=c11 -Wno-deprecated-declarations
+// #cgo CFLAGS: -std=c11 -Wno-deprecated-declarations -I/usr/local/include
 // #cgo pkg-config: libavcodec
 import "C"
 
@@ -117,7 +117,7 @@ func getArgs() (Args, error) {
 	output := flag.String("o", "", "Output URL valid for the given format. For HLS you can provide a https://a.upload.youtube.com/...")
 	outputFormat := flag.String("f", "mp4", "Output format.")
 	audio := flag.Bool("a", false, "send audio")
-	verbose := flag.Bool("verbose", true, "Enable verbose logging output.")
+	verbose := flag.Bool("verbose", false, "Enable verbose logging output.")
 	fcgi := flag.Bool("fcgi", false, "Serve using FastCGI (true) or as a regular HTTP server.")
 
 	flag.Parse()
@@ -243,8 +243,6 @@ func encoder(inputFormat, inputURL string, outputURL string, outputFormat string
 		}
 
 		if(output != nil) {
-			log.Printf("Writing packet...")
-			
 			// Send to output url
 			var sent bool
 			sent = writePacketToOutputURL(input, &pkt, output, verbose)
